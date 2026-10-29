@@ -1,3 +1,6 @@
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { parseThreshold } from "../src/env.ts";
 import {
   buildAllowHeaders,
@@ -5,6 +8,17 @@ import {
   buildSpamHeaders,
 } from "../src/headers.ts";
 import { matchSender, parseList } from "../src/lists.ts";
+import { parseEmail } from "../src/parse.ts";
+
+const projectRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
+
+function readFixtureArrayBuffer(name: string): ArrayBuffer {
+  const bytes = readFileSync(join(projectRoot, "fixtures", name));
+  return bytes.buffer.slice(
+    bytes.byteOffset,
+    bytes.byteOffset + bytes.byteLength,
+  );
+}
 
 function assert(condition: boolean, message: string): void {
   if (!condition) {
@@ -77,4 +91,16 @@ assert(
   "error path uses score 0 → No",
 );
 
-console.log("e2e: list + env + headers OK");
+async function runParseFixtures(): Promise<void> {
+  const ham = await parseEmail(readFixtureArrayBuffer("ham.eml"));
+  assert(ham.subject.length > 0, "ham.eml → non-empty subject");
+  assert(ham.text.length > 0, "ham.eml → non-empty text");
+
+  const spam = await parseEmail(readFixtureArrayBuffer("spam.eml"));
+  assert(spam.subject.length > 0, "spam.eml → non-empty subject");
+  assert(spam.text.length > 0, "spam.eml → non-empty text");
+}
+
+await runParseFixtures();
+
+console.log("e2e: list + env + headers + parse OK");
