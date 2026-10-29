@@ -63,13 +63,11 @@ export async function decide(opts: {
     };
   } catch (e) {
     // Fail open: never drop mail because scoring is unavailable.
-    console.log(JSON.stringify({ from: opts.from, path: "error" }));
+    const error = e instanceof Error ? e.message : String(e);
+    console.log(JSON.stringify({ from: opts.from, path: "error", error }));
     return {
       action: "forward",
-      headers: buildErrorHeaders(
-        e instanceof Error ? e.message : String(e),
-        threshold,
-      ),
+      headers: buildErrorHeaders(error, threshold),
       path: "error",
     };
   }

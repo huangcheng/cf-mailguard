@@ -1,3 +1,4 @@
+import { llmFetchSignal } from "./fetch-timeout.ts";
 import type { MailguardEnv } from "../env.ts";
 import {
   buildUserPrompt,
@@ -26,6 +27,7 @@ export function createAnthropicScorer(env: MailguardEnv): Scorer {
   return async (input: ScoreInput): Promise<ScoreResult> => {
     const res = await fetch(`${base}/v1/messages`, {
       method: "POST",
+      signal: llmFetchSignal(),
       headers: {
         "x-api-key": env.LLM_API_KEY ?? "",
         "anthropic-version": ANTHROPIC_VERSION,

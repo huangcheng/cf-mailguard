@@ -1,3 +1,4 @@
+import { llmFetchSignal } from "./fetch-timeout.ts";
 import type { MailguardEnv } from "../env.ts";
 import {
   buildUserPrompt,
@@ -18,6 +19,7 @@ export function createOpenAIChatScorer(env: MailguardEnv): Scorer {
   return async (input: ScoreInput): Promise<ScoreResult> => {
     const res = await fetch(`${base}/chat/completions`, {
       method: "POST",
+      signal: llmFetchSignal(),
       headers: {
         authorization: `Bearer ${env.LLM_API_KEY ?? ""}`,
         "content-type": "application/json",
