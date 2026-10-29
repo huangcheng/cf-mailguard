@@ -4,7 +4,9 @@
   "main": "src/index.ts",
   "compatibility_date": "2026-10-29",
   "compatibility_flags": [],
+  // LLM_API_KEY is a secret — use `wrangler secret put LLM_API_KEY` or `.dev.vars` locally.
   "vars": {
+    // Must be a verified Email Routing destination address.
     "FORWARD_TO": "you@example.com",
     "ALLOW_LIST": "",
     "BLOCK_LIST": "",
