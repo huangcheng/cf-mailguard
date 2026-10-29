@@ -1,0 +1,16 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "cf-mailguard",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-10-29",
+  "compatibility_flags": [],
+  "vars": {
+    "FORWARD_TO": "you@example.com",
+    "ALLOW_LIST": "",
+    "BLOCK_LIST": "",
+    "SPAM_THRESHOLD": "5.0",
+    "LLM_PROVIDER": "openai_chat",
+    "LLM_MODEL": "gpt-4.1-mini",
+    "LLM_BASE_URL": ""
+  }
+}
