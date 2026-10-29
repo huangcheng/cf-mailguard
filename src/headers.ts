@@ -11,12 +11,24 @@ export function spamLevel(score: number): string {
   return "*".repeat(n);
 }
 
+// Header values must stay ISO-8859-1 and free of C0 controls so Headers.set
+// never throws (which would break fail-open) and SMTP parsers cannot smuggle.
 function trunc(s: string | undefined): string | undefined {
   if (!s) return undefined;
-  const t = s.replace(/[\r\n]+/g, " ").trim();
-  return t.length <= REASONING_MAX
-    ? t
-    : t.slice(0, REASONING_MAX - TRUNC_SUFFIX.length) + TRUNC_SUFFIX;
+  const cleaned = Array.from(
+    s
+      .replace(/[\u0000-\u001F\u007F]+/g, " ")
+      .replace(/[^\x20-\x7E\xA0-\xFF]/g, "?"),
+  )
+    .join("")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!cleaned) return undefined;
+  const chars = Array.from(cleaned);
+  return chars.length <= REASONING_MAX
+    ? cleaned
+    : chars.slice(0, REASONING_MAX - TRUNC_SUFFIX.length).join("") +
+        TRUNC_SUFFIX;
 }
 
 export function buildSpamHeaders(opts: {
@@ -52,6 +64,6 @@ export function buildAllowHeaders(threshold: number): Headers {
 
 export function buildErrorHeaders(message: string, threshold: number): Headers {
   const headers = buildSpamHeaders({ score: 0, threshold });
-  headers.set("X-Mailguard-Error", trunc(message) ?? "scoring_failed");
+  headers.set("X-Mailguard-Error", trunc(message) || "scoring_failed");
   return headers;
 }

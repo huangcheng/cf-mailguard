@@ -1,13 +1,15 @@
-import { llmFetchSignal } from "./fetch-timeout.ts";
 import type { MailguardEnv } from "../env.ts";
+import { postForJson } from "./post-json.ts";
 import {
   buildUserPrompt,
   parseModelJson,
-  resolveBaseUrl,
+  resolveAnthropicBaseUrl,
   SCORE_SYSTEM_PROMPT,
 } from "./prompt.ts";
 import type { ScoreInput, ScoreResult, Scorer } from "./types.ts";
 
+// LLM_BASE_URL must NOT include "/v1" — this adapter appends /v1/messages.
+// resolveAnthropicBaseUrl also strips a trailing /v1 if an OpenAI-style URL is reused.
 const DEFAULT_BASE = "https://api.anthropic.com";
 const ANTHROPIC_VERSION = "2023-06-01";
 // Enough tokens for the single-line JSON verdict the prompt asks for.
@@ -23,27 +25,23 @@ interface AnthropicResponse {
 }
 
 export function createAnthropicScorer(env: MailguardEnv): Scorer {
-  const base = resolveBaseUrl(env.LLM_BASE_URL, DEFAULT_BASE);
+  const base = resolveAnthropicBaseUrl(env.LLM_BASE_URL, DEFAULT_BASE);
   return async (input: ScoreInput): Promise<ScoreResult> => {
-    const res = await fetch(`${base}/v1/messages`, {
-      method: "POST",
-      signal: llmFetchSignal(),
-      headers: {
+    const data = (await postForJson(
+      "anthropic",
+      `${base}/v1/messages`,
+      {
         "x-api-key": env.LLM_API_KEY ?? "",
         "anthropic-version": ANTHROPIC_VERSION,
         "content-type": "application/json",
       },
-      body: JSON.stringify({
+      {
         model: env.LLM_MODEL,
         max_tokens: MAX_TOKENS,
         system: SCORE_SYSTEM_PROMPT,
         messages: [{ role: "user", content: buildUserPrompt(input) }],
-      }),
-    });
-    if (!res.ok) {
-      throw new Error(`anthropic ${res.status}: ${(await res.text()).slice(0, 300)}`);
-    }
-    const data = (await res.json()) as AnthropicResponse;
+      },
+    )) as AnthropicResponse;
     const text = (data.content ?? [])
       .filter((block) => block.type === "text" && typeof block.text === "string")
       .map((block) => block.text)

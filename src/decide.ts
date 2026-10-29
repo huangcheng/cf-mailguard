@@ -18,9 +18,11 @@ export type Decision =
 
 export async function decide(opts: {
   from: string;
+  headerFrom?: string;
   to: string;
   subject: string;
   text: string;
+  parseError?: string;
   env: MailguardEnv;
   scoreEmail: Scorer;
 }): Promise<Decision> {
@@ -40,9 +42,22 @@ export async function decide(opts: {
     };
   }
 
+  // Visible fail-open when MIME parse failed — do not score an empty body as ham.
+  if (opts.parseError) {
+    console.log(
+      JSON.stringify({ from: opts.from, path: "error", error: opts.parseError }),
+    );
+    return {
+      action: "forward",
+      headers: buildErrorHeaders(opts.parseError, threshold),
+      path: "error",
+    };
+  }
+
   try {
     const result = await opts.scoreEmail({
       from: opts.from,
+      headerFrom: opts.headerFrom,
       to: opts.to,
       subject: opts.subject,
       text: opts.text,

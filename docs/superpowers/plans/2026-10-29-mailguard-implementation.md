@@ -22,7 +22,7 @@
 - `LLM_PROVIDER` values: `openai_chat` | `openai_responses` | `anthropic_messages`.
 - Testing: E2E only (fixtures + script → `artifacts/`); do not add a unit-test suite.
 - Engineering artifacts (code, commits, README) in English.
-- GitHub remote: `huangcheng/cf-mailguard`; local folder may remain `mailguard`.
+- Publish to your own GitHub remote; keep secrets and personal addresses out of git.
 
 ## Review Focus
 
@@ -653,7 +653,7 @@ git commit -m "docs: add setup and configuration guide"
 
 **Files:**
 - Modify: `docs/superpowers/specs/2026-10-29-mailguard-design.md` status → Approved
-- Push: `origin/main` on `huangcheng/cf-mailguard`
+- Push: `origin/main` (or your default branch) on your remote
 
 - [ ] **Step 1: Mark spec Approved** (one-line status change)
 

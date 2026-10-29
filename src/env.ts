@@ -10,6 +10,7 @@ export interface MailguardEnv {
 }
 
 export function parseThreshold(raw: string | undefined): number {
-  const n = Number.parseFloat(raw ?? "5.0");
+  // Number() rejects partial junk like "7abc" / "5.0.1" (unlike parseFloat).
+  const n = Number(raw ?? "5.0");
   return Number.isFinite(n) && n > 0 ? n : 5.0;
 }

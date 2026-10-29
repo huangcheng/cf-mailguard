@@ -1,5 +1,7 @@
 export interface ScoreInput {
   from: string;
+  /** Display/header From when available (may differ from envelope). */
+  headerFrom?: string;
   to: string;
   subject: string;
   text: string;

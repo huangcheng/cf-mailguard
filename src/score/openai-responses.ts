@@ -1,5 +1,5 @@
-import { llmFetchSignal } from "./fetch-timeout.ts";
 import type { MailguardEnv } from "../env.ts";
+import { postForJson } from "./post-json.ts";
 import {
   buildUserPrompt,
   parseModelJson,
@@ -8,6 +8,7 @@ import {
 } from "./prompt.ts";
 import type { ScoreInput, ScoreResult, Scorer } from "./types.ts";
 
+// LLM_BASE_URL should include "/v1" (default: https://api.openai.com/v1).
 const DEFAULT_BASE = "https://api.openai.com/v1";
 
 interface ResponsesOutputPart {
@@ -39,23 +40,21 @@ function extractText(data: ResponsesApiResult): string {
 export function createOpenAIResponsesScorer(env: MailguardEnv): Scorer {
   const base = resolveBaseUrl(env.LLM_BASE_URL, DEFAULT_BASE);
   return async (input: ScoreInput): Promise<ScoreResult> => {
-    const res = await fetch(`${base}/responses`, {
-      method: "POST",
-      signal: llmFetchSignal(),
-      headers: {
+    const data = (await postForJson(
+      "openai_responses",
+      `${base}/responses`,
+      {
         authorization: `Bearer ${env.LLM_API_KEY ?? ""}`,
         "content-type": "application/json",
       },
-      body: JSON.stringify({
+      {
         model: env.LLM_MODEL,
         instructions: SCORE_SYSTEM_PROMPT,
         input: buildUserPrompt(input),
-      }),
-    });
-    if (!res.ok) {
-      throw new Error(`openai_responses ${res.status}: ${(await res.text()).slice(0, 300)}`);
-    }
-    const data = (await res.json()) as ResponsesApiResult;
+        // Opt out of default ~30-day response storage for private mail content.
+        store: false,
+      },
+    )) as ResponsesApiResult;
     const text = extractText(data);
     if (text === "") {
       throw new Error("openai_responses: no output text");
