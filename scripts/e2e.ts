@@ -1,12 +1,15 @@
-import { readFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { decide } from "../src/decide.ts";
 import { parseThreshold } from "../src/env.ts";
+import type { MailguardEnv } from "../src/env.ts";
 import {
   buildAllowHeaders,
   buildErrorHeaders,
   buildSpamHeaders,
 } from "../src/headers.ts";
+import worker from "../src/index.ts";
 import { matchSender, parseList } from "../src/lists.ts";
 import { parseEmail } from "../src/parse.ts";
 import { createScorer } from "../src/score/index.ts";
@@ -14,7 +17,6 @@ import {
   parseModelJson,
   resolveBaseUrl,
 } from "../src/score/prompt.ts";
-import type { MailguardEnv } from "../src/env.ts";
 
 const projectRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -26,11 +28,25 @@ function readFixtureArrayBuffer(name: string): ArrayBuffer {
   );
 }
 
+// Collect results so the whole run produces a durable log artifact
+// and a single non-zero exit status at the end.
+const logLines: string[] = [];
+let passed = 0;
+let failed = 0;
+
 function assert(condition: boolean, message: string): void {
-  if (!condition) {
-    console.error(`FAIL: ${message}`);
-    process.exit(1);
+  if (condition) {
+    logLines.push(`[PASS] ${message}`);
+    passed++;
+  } else {
+    logLines.push(`[FAIL] ${message}`);
+    failed++;
   }
+}
+
+function stamp(d = new Date()): string {
+  const p = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`;
 }
 
 // List matching (Task 2)
@@ -107,7 +123,11 @@ async function runParseFixtures(): Promise<void> {
   assert(spam.text.length > 0, "spam.eml → non-empty text");
 }
 
-await runParseFixtures();
+try {
+  await runParseFixtures();
+} catch (e) {
+  assert(false, `parse fixtures threw: ${String(e)}`);
+}
 
 // Score helpers + BYOK adapters (Task 5)
 const embedded = parseModelJson(
@@ -152,6 +172,15 @@ function makeEnv(provider: string): MailguardEnv {
     LLM_MODEL: "test-model",
     LLM_API_KEY: "test-key",
     LLM_BASE_URL: "https://llm.test/",
+  };
+}
+
+function makeMailEnv(overrides: Partial<MailguardEnv> = {}): MailguardEnv {
+  return {
+    ...makeEnv("openai_chat"),
+    ALLOW_LIST: "friend@example.com",
+    BLOCK_LIST: "bad@example.net,@evil.com",
+    ...overrides,
   };
 }
 
@@ -254,8 +283,158 @@ try {
     providerThrew = true;
   }
   assert(providerThrew, "unknown LLM_PROVIDER throws");
+
+  // Decision pipeline + email() handler (Task 6)
+  // Fake ForwardableEmailMessage: exercises the real handler entry point
+  // against a mocked fetch, so the whole wire (parse → decide → act) runs.
+  const hamBytes = readFixtureArrayBuffer("ham.eml");
+
+  function makeFakeMessage(from: string) {
+    const msg = {
+      from,
+      to: "me@example.com",
+      headers: new Headers({ subject: "hello from e2e" }),
+      raw: new Blob([hamBytes]).stream(),
+      rejected: undefined as string | undefined,
+      forwarded: undefined as { to: string; headers?: Headers } | undefined,
+      setReject(reason: string) {
+        this.rejected = reason;
+      },
+      async forward(to: string, headers?: Headers) {
+        this.forwarded = { to, headers };
+      },
+    };
+    return msg;
+  }
+
+  const ctx = {} as ExecutionContext;
+
+  // Scenario 1: blocked sender → reject
+  const blocked = makeFakeMessage("bad@example.net");
+  await worker.email(blocked, makeMailEnv(), ctx);
+  assert(blocked.rejected === "Address not allowed", "handler: blocked sender is rejected with 'Address not allowed'");
+  assert(blocked.forwarded === undefined, "handler: blocked sender is not forwarded");
+
+  // Blocked via domain entry
+  const blockedDomain = makeFakeMessage("anyone@evil.com");
+  await worker.email(blockedDomain, makeMailEnv(), ctx);
+  assert(blockedDomain.rejected === "Address not allowed", "handler: @evil.com domain block rejects sub-address");
+
+  // Scenario 2: allowlisted sender → forward with score -1.0
+  const allowed = makeFakeMessage("friend@example.com");
+  await worker.email(allowed, makeMailEnv(), ctx);
+  assert(allowed.rejected === undefined, "handler: allowlisted sender is not rejected");
+  assert(allowed.forwarded?.to === "me@example.com", "handler: allowlisted sender forwarded to FORWARD_TO");
+  assert(allowed.forwarded?.headers?.get("X-Spam-Score") === "-1.0", "handler: allowlist forward carries X-Spam-Score -1.0");
+  assert(allowed.forwarded?.headers?.get("X-Mailguard-Category") === "allowlist", "handler: allowlist forward carries category allowlist");
+
+  // Scenario 3: unknown sender + score 8.5 → X-Spam-Status Yes
+  globalThis.fetch = (async () =>
+    jsonResponse({
+      choices: [
+        {
+          message: {
+            content:
+              '{"score": 8.5, "category": "spam", "reasoning": "bulk unsolicited"}',
+          },
+        },
+      ],
+    })) as typeof fetch;
+  const scored = makeFakeMessage("stranger@unknown.org");
+  await worker.email(scored, makeMailEnv(), ctx);
+  assert(scored.rejected === undefined, "handler: unknown sender is not rejected");
+  assert(scored.forwarded !== undefined, "handler: unknown sender is forwarded");
+  assert(scored.forwarded?.headers?.get("X-Spam-Status")?.startsWith("Yes") === true, "handler: score 8.5 ≥ threshold 5 → X-Spam-Status Yes");
+  assert(scored.forwarded?.headers?.get("X-Spam-Score") === "8.5", "handler: scored forward carries X-Spam-Score 8.5");
+  assert(scored.forwarded?.headers?.get("X-Mailguard-Category") === "spam", "handler: scored forward carries scorer category");
+
+  // Scenario 4: throwing scorer → fail-open forward + X-Mailguard-Error
+  globalThis.fetch = (async () => {
+    throw new Error("LLM provider down");
+  }) as typeof fetch;
+  const errored = makeFakeMessage("stranger@unknown.org");
+  await worker.email(errored, makeMailEnv(), ctx);
+  assert(errored.rejected === undefined, "handler: scorer failure does not reject (fail-open)");
+  assert(errored.forwarded !== undefined, "handler: scorer failure still forwards");
+  assert(errored.forwarded?.headers?.get("X-Mailguard-Error") === "LLM provider down", "handler: scorer failure sets X-Mailguard-Error");
+
+  // Unsupported provider must also fail open through the handler
+  const bogusEnv = makeMailEnv({ LLM_PROVIDER: "bogus_provider" });
+  const bogus = makeFakeMessage("stranger@unknown.org");
+  await worker.email(bogus, bogusEnv, ctx);
+  assert(bogus.forwarded?.headers?.get("X-Mailguard-Error") !== undefined, "handler: unsupported LLM_PROVIDER fails open with X-Mailguard-Error");
 } finally {
   globalThis.fetch = realFetch;
 }
 
-console.log("e2e: list + env + headers + parse + score OK");
+// Scenario 5: domain @example.com must not substring-match notexample.com
+const notExample = await decide({
+  from: "someone@notexample.com",
+  to: "me@example.com",
+  subject: "hi",
+  text: "hello",
+  env: makeMailEnv({ ALLOW_LIST: "@example.com", BLOCK_LIST: "" }),
+  scoreEmail: async () => ({ score: 4.2, category: "personal", reasoning: "friend" }),
+});
+assert(
+  notExample.action === "forward" && notExample.path === "score",
+  "decide: @example.com allow entry does not substring-match notexample.com → score path",
+);
+assert(
+  notExample.action === "forward" && notExample.score === 4.2,
+  "decide: notexample.com sender reaches the scorer",
+);
+
+// Allowlisted via decide() directly
+const allowedDecision = await decide({
+  from: "pal@example.com",
+  to: "me@example.com",
+  subject: "hi",
+  text: "hello",
+  env: makeMailEnv({ ALLOW_LIST: "@example.com" }),
+  scoreEmail: async () => ({ score: 9.9 }),
+});
+assert(
+  allowedDecision.action === "forward" && allowedDecision.path === "allow",
+  "decide: allowlisted sender takes allow path without scoring",
+);
+assert(
+  allowedDecision.action === "forward" &&
+    allowedDecision.headers.get("X-Spam-Score") === "-1.0",
+  "decide: allow path carries X-Spam-Score -1.0",
+);
+
+// Blocked via decide() directly
+const blockedDecision = await decide({
+  from: "bad@example.net",
+  to: "me@example.com",
+  subject: "hi",
+  text: "hello",
+  env: makeMailEnv(),
+  scoreEmail: async () => ({ score: 0 }),
+});
+assert(
+  blockedDecision.action === "reject" && blockedDecision.reason === "Address not allowed",
+  "decide: blocked sender rejects before scoring runs",
+);
+
+const total = passed + failed;
+const summary =
+  failed === 0
+    ? `SUMMARY: ${passed}/${total} assertions passed`
+    : `SUMMARY: FAILED ${failed}/${total} assertions`;
+
+logLines.push(summary);
+
+const artifactsDir = join(projectRoot, "artifacts");
+mkdirSync(artifactsDir, { recursive: true });
+const logPath = join(artifactsDir, `e2e-${stamp()}.log`);
+writeFileSync(logPath, logLines.join("\n") + "\n", "utf8");
+
+console.log(summary);
+console.log(`e2e log: ${logPath}`);
+if (failed > 0) {
+  console.log(logLines.filter((l) => l.startsWith("[FAIL]")).join("\n"));
+  process.exit(1);
+}
+console.log("e2e: list + env + headers + parse + score + decide OK");
