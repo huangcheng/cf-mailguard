@@ -1,7 +1,7 @@
 # Mailguard design
 
 **Date:** 2026-10-29  
-**Status:** Draft for review  
+**Status:** Approved  
 **Repo:** [`huangcheng/cf-mailguard`](https://github.com/huangcheng/cf-mailguard) (local folder: `~/Projects/mailguard`) — Cloudflare Email Worker for BYOK spam scoring
 
 ## Problem
