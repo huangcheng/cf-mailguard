@@ -28,7 +28,9 @@ Scored mail is always forwarded. `SPAM_THRESHOLD` only drives `X-Spam-Status` Ye
 | `LLM_API_KEY` | secret | BYOK API key (never commit; see below) |
 | `LLM_BASE_URL` | var (optional) | Override API base URL (proxies or OpenAI-compatible gateways) |
 
-Set non-secret values in [`wrangler.jsonc`](wrangler.jsonc) `vars` (or the Cloudflare dashboard). Redeploy or update vars after changes. Keep real destinations, keys, and custom base URLs out of git — use dashboard vars, `wrangler secret`, or a local `.dev.vars` file.
+Set non-secret values in [`wrangler.jsonc`](wrangler.jsonc) `vars` **or** the Cloudflare dashboard (**Settings → Variables & Secrets**). This repo sets `keep_vars: true` so dashboard-only values (for example `FORWARD_TO`, `LLM_MODEL`, `LLM_BASE_URL`) survive Workers Builds / Git deploys. Keep real destinations, keys, and custom base URLs out of git — use the dashboard, `wrangler secret`, or a local `.dev.vars` file.
+
+With [Workers Builds](https://developers.cloudflare.com/workers/ci-cd/builds/) connected to GitHub (`main` → `npx wrangler deploy`), push to `main` to deploy. Ensure `LLM_API_KEY` and your destination/model vars exist in the dashboard before the first build.
 
 ### API key (secret)
 
