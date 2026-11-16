@@ -41,7 +41,7 @@ Set non-secret values in [`wrangler.jsonc`](wrangler.jsonc) `vars` **or** the Cl
 | Repo | `huangcheng/cf-mailguard` |
 | Production branch | `main` → `npx wrangler deploy` |
 | Previews | other branches → `npx wrangler preview` |
-| Watch paths | all files except `**/*.md`, `docs/**`, `artifacts/**`, `.github/**` |
+| Watch paths | all files except `*.md` / `**/*.md`, `docs/**`, `artifacts/**`, `.github/**` |
 
 Push to `main` deploys production automatically. Dashboard vars/secrets (`FORWARD_TO`, `LLM_*`, etc.) are preserved via `keep_vars: true`. Manual rebuilds can use the **manual-main** Deploy Hook under **Settings → Builds → Deploy Hooks**.
 
