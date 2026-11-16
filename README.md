@@ -32,7 +32,18 @@ Structured Workers logs include `path`, `from`, `to`, optional auth verdicts, `s
 
 Set non-secret values in [`wrangler.jsonc`](wrangler.jsonc) `vars` **or** the Cloudflare dashboard (**Settings → Variables & Secrets**). This repo sets `keep_vars: true` so dashboard-only values (for example `FORWARD_TO`, `LLM_MODEL`, `LLM_BASE_URL`) survive Workers Builds / Git deploys. Keep real destinations, keys, and custom base URLs out of git — use the dashboard, `wrangler secret`, or a local `.dev.vars` file.
 
-With [Workers Builds](https://developers.cloudflare.com/workers/ci-cd/builds/) connected to GitHub (`main` → `npx wrangler deploy`), push to `main` to deploy. Ensure `LLM_API_KEY` and your destination/model vars exist in the dashboard before the first build.
+### Auto deploy (Workers Builds)
+
+[Workers Builds](https://developers.cloudflare.com/workers/ci-cd/builds/) is connected for this Worker:
+
+| Setting | Value |
+|---------|--------|
+| Repo | `huangcheng/cf-mailguard` |
+| Production branch | `main` → `npx wrangler deploy` |
+| Previews | other branches → `npx wrangler preview` |
+| Watch paths | all files except `**/*.md`, `docs/**`, `artifacts/**`, `.github/**` |
+
+Push to `main` deploys production automatically. Dashboard vars/secrets (`FORWARD_TO`, `LLM_*`, etc.) are preserved via `keep_vars: true`. Manual rebuilds can use the **manual-main** Deploy Hook under **Settings → Builds → Deploy Hooks**.
 
 ### API key (secret)
 
