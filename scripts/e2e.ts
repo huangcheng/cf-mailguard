@@ -1,9 +1,12 @@
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { parseAuthSignals } from "../src/auth.ts";
+import { validateMailguardConfig } from "../src/config.ts";
 import { decide } from "../src/decide.ts";
 import { parseThreshold } from "../src/env.ts";
 import type { MailguardEnv } from "../src/env.ts";
+import { detectFromMismatch, extractEmailAddress } from "../src/from.ts";
 import {
   buildAllowHeaders,
   buildErrorHeaders,
@@ -14,11 +17,13 @@ import { matchSender, parseList } from "../src/lists.ts";
 import { parseEmail } from "../src/parse.ts";
 import { createScorer } from "../src/score/index.ts";
 import {
+  buildUserPrompt,
   parseModelJson,
   resolveAnthropicBaseUrl,
   resolveBaseUrl,
   SCORE_SYSTEM_PROMPT,
 } from "../src/score/prompt.ts";
+import { postForJson } from "../src/score/post-json.ts";
 
 const projectRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -660,6 +665,199 @@ try {
       parseFail.headers.get("X-Mailguard-Error") === "mime boom",
     "decide: parseError sets X-Mailguard-Error",
   );
+
+  // Auth + From mismatch helpers
+  const auth = parseAuthSignals({
+    authenticationResults: [
+      "mx.cloudflare.net; dkim=pass header.d=example.com; spf=fail smtp.mailfrom=a@b.com; dmarc=pass",
+    ],
+  });
+  assert(auth.spf === "fail", "parseAuthSignals reads spf=fail");
+  assert(auth.dkim === "pass", "parseAuthSignals reads dkim=pass");
+  assert(auth.dmarc === "pass", "parseAuthSignals reads dmarc=pass");
+  assert(
+    (auth.raw ?? "").includes("dkim=pass") === true,
+    "parseAuthSignals keeps truncated raw Authentication-Results",
+  );
+  assert(
+    parseAuthSignals({ receivedSpf: ["Pass (sender IP is …)"] }).spf === "pass",
+    "parseAuthSignals falls back to Received-SPF",
+  );
+
+  assert(
+    extractEmailAddress('Alice <Alice@Example.com>') === "alice@example.com",
+    "extractEmailAddress parses display-name form",
+  );
+  assert(
+    detectFromMismatch("real@example.com", "Spoof <other@evil.com>") === true,
+    "detectFromMismatch true when addresses differ",
+  );
+  assert(
+    detectFromMismatch("real@example.com", "Real <real@example.com>") === false,
+    "detectFromMismatch false when addresses match",
+  );
+  assert(
+    detectFromMismatch("real@example.com", undefined) === false,
+    "detectFromMismatch false when header From missing",
+  );
+
+  const prompted = buildUserPrompt({
+    from: "envelope@example.com",
+    headerFrom: "Display <header@evil.com>",
+    to: "me@example.com",
+    subject: "hi",
+    text: "body",
+    fromMismatch: true,
+    auth: { spf: "fail", dkim: "pass", dmarc: "fail", raw: "spf=fail; dkim=pass" },
+  });
+  assert(
+    prompted.includes("From-Mismatch: yes") === true,
+    "buildUserPrompt includes From-Mismatch",
+  );
+  assert(
+    prompted.includes("Auth-Summary: spf=fail; dkim=pass; dmarc=fail") === true,
+    "buildUserPrompt includes Auth-Summary",
+  );
+  assert(
+    prompted.includes("Authentication-Results: spf=fail; dkim=pass") === true,
+    "buildUserPrompt includes Authentication-Results",
+  );
+
+  let scoredWithSignals: {
+    fromMismatch?: boolean;
+    auth?: { spf?: string };
+  } | undefined;
+  const signalDecision = await decide({
+    from: "envelope@example.com",
+    headerFrom: "Display <header@evil.com>",
+    to: "me@example.com",
+    subject: "hi",
+    text: "hello",
+    fromMismatch: true,
+    auth: { spf: "fail", dkim: "pass", dmarc: "fail" },
+    env: makeMailEnv({ ALLOW_LIST: "", BLOCK_LIST: "" }),
+    scoreEmail: async (input) => {
+      scoredWithSignals = {
+        fromMismatch: input.fromMismatch,
+        auth: input.auth,
+      };
+      return { score: 6.5, category: "phishing", reasoning: "mismatch" };
+    },
+  });
+  assert(
+    scoredWithSignals?.fromMismatch === true &&
+      scoredWithSignals.auth?.spf === "fail",
+    "decide: passes fromMismatch and auth into scoreEmail",
+  );
+  assert(
+    signalDecision.action === "forward" &&
+      signalDecision.path === "score" &&
+      signalDecision.category === "phishing",
+    "decide: score path returns category from scorer",
+  );
+
+  // Config validation
+  const cfgOk = validateMailguardConfig(makeEnv("openai_chat"));
+  assert(cfgOk.length === 0, "validateMailguardConfig ok for complete env");
+  const cfgBad = validateMailguardConfig(
+    makeEnv("nope", { FORWARD_TO: "", LLM_API_KEY: "", LLM_MODEL: "" }),
+  );
+  assert(
+    cfgBad.some((i) => i.message.includes("FORWARD_TO")) === true,
+    "validateMailguardConfig flags empty FORWARD_TO",
+  );
+  assert(
+    cfgBad.some((i) => i.message.includes("LLM_PROVIDER")) === true,
+    "validateMailguardConfig flags unsupported provider",
+  );
+
+  // LLM POST retries once on HTTP 500 then succeeds
+  let postAttempts = 0;
+  const realFetchRetry = globalThis.fetch;
+  try {
+    globalThis.fetch = (async () => {
+      postAttempts++;
+      if (postAttempts === 1) return new Response("busy", { status: 500 });
+      return jsonResponse({ ok: true });
+    }) as typeof fetch;
+    const json = (await postForJson(
+      "retry_test",
+      "https://llm.test/retry",
+      { "content-type": "application/json" },
+      { ping: 1 },
+    )) as { ok?: boolean };
+    assert(postAttempts === 2, "postForJson retries once after HTTP 500");
+    assert(json.ok === true, "postForJson returns JSON after successful retry");
+  } finally {
+    globalThis.fetch = realFetchRetry;
+  }
+
+  // Handler passes Authentication-Results into the scorer prompt
+  let authPrompt = "";
+  const realFetchAuth = globalThis.fetch;
+  try {
+    globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body)) as {
+        messages?: Array<{ content?: string }>;
+      };
+      authPrompt = body.messages?.[1]?.content ?? "";
+      return jsonResponse({
+        choices: [
+          {
+            message: {
+              content:
+                '{"score": 2.0, "category": "personal", "reasoning": "auth ok"}',
+            },
+          },
+        ],
+      });
+    }) as typeof fetch;
+
+    const hamBytesAuth = readFixtureArrayBuffer("ham.eml");
+    const authMsg = {
+      from: "sender@example.com",
+      to: "me@example.com",
+      headers: new Headers({
+        subject: "auth e2e",
+        from: "Other <other@evil.com>",
+        "authentication-results":
+          "mx.cloudflare.net; spf=fail; dkim=pass; dmarc=fail",
+      }),
+      raw: new Blob([hamBytesAuth]).stream(),
+      rawSize: hamBytesAuth.byteLength,
+      rejected: undefined as string | undefined,
+      forwarded: undefined as { to: string; headers?: Headers } | undefined,
+      setReject(reason: string) {
+        this.rejected = reason;
+      },
+      async forward(to: string, headers?: Headers) {
+        this.forwarded = { to, headers };
+      },
+      async reply() {
+        return {} as EmailSendResult;
+      },
+    };
+    await worker.email(
+      authMsg as unknown as ForwardableEmailMessage,
+      makeMailEnv({ ALLOW_LIST: "", BLOCK_LIST: "" }),
+      {} as ExecutionContext,
+    );
+    assert(
+      authPrompt.includes("From-Mismatch: yes") === true,
+      "handler: From-Mismatch reaches LLM prompt",
+    );
+    assert(
+      authPrompt.includes("Auth-Summary:") === true &&
+        authPrompt.includes("spf=fail") === true,
+      "handler: Auth-Summary reaches LLM prompt",
+    );
+    assert(
+      authMsg.forwarded?.headers?.get("X-Spam-Score") === "2.0",
+      "handler: auth-enriched score path still forwards",
+    );
+  } finally {
+    globalThis.fetch = realFetchAuth;
+  }
 } catch (e) {
   assert(false, `unexpected error: ${String(e)}`);
 }

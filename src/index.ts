@@ -1,5 +1,8 @@
+import { authSignalsFromHeaders } from "./auth.ts";
+import { logConfigOnce } from "./config.ts";
 import { decide } from "./decide.ts";
 import { parseThreshold, type MailguardEnv } from "./env.ts";
+import { detectFromMismatch } from "./from.ts";
 import { buildErrorHeaders } from "./headers.ts";
 import { parseEmail } from "./parse.ts";
 import { createScorer } from "./score/index.ts";
@@ -10,6 +13,7 @@ export default {
     env: MailguardEnv,
     _ctx: ExecutionContext,
   ): Promise<void> {
+    logConfigOnce(env);
     try {
       let subject = message.headers.get("subject") ?? "";
       let text = "";
@@ -26,6 +30,14 @@ export default {
         parseError = e instanceof Error ? e.message : String(e);
       }
 
+      // Prefer MIME Header-From; fall back to the transport header if parse failed.
+      if (!headerFrom) {
+        headerFrom = message.headers.get("from") ?? undefined;
+      }
+
+      const auth = authSignalsFromHeaders(message.headers);
+      const fromMismatch = detectFromMismatch(message.from, headerFrom);
+
       const decision = await decide({
         from: message.from,
         headerFrom,
@@ -33,6 +45,8 @@ export default {
         subject,
         text,
         parseError,
+        fromMismatch,
+        auth,
         env,
         // Deferred so an unsupported LLM_PROVIDER fails open through decide()'s
         // error path (X-Mailguard-Error) instead of crashing the handler.

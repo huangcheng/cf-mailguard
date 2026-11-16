@@ -8,12 +8,14 @@ Self-host on your Cloudflare account — no hosted SaaS, no shared keys.
 
 1. **Block list** — matching senders get an SMTP reject (`Address not allowed`).
 2. **Allow list** — matching senders are forwarded immediately with clean spam headers (`X-Spam-Score: -1.0`, no LLM call).
-3. **BYOK scoring** — everyone else is classified by your configured OpenAI- or Anthropic-compatible model. The Worker adds `X-Spam-Score`, `X-Spam-Status`, `X-Spam-Level`, plus optional `X-Mailguard-Category` and `X-Mailguard-Reasoning` from the model JSON, then forwards.
-4. **Fail-open** — if scoring fails, mail still forwards with `X-Mailguard-Error` so nothing is dropped on AI errors.
+3. **BYOK scoring** — everyone else is classified by your configured OpenAI- or Anthropic-compatible model. The Worker adds `X-Spam-Score`, `X-Spam-Status`, `X-Spam-Level`, plus optional `X-Mailguard-Category` and `X-Mailguard-Reasoning` from the model JSON, then forwards. Scoring also sees SPF/DKIM/DMARC from `Authentication-Results` and whether Envelope-From disagrees with Header-From.
+4. **Fail-open** — if scoring fails, mail still forwards with `X-Mailguard-Error` so nothing is dropped on AI errors. Transient LLM `429`/`5xx` responses are retried once before fail-open.
 
 Envelope `message.from` (not the display From header alone) drives list matching.
 
 Scored mail is always forwarded. `SPAM_THRESHOLD` only drives `X-Spam-Status` Yes/No for downstream filters — it does not reject. Use `BLOCK_LIST` to drop senders at SMTP time.
+
+Structured Workers logs include `path`, `from`, `to`, optional auth verdicts, `score`/`category`, and `error` so you can filter on `path=error` in Observability.
 
 ## Configuration
 
@@ -65,10 +67,13 @@ Leave empty to use each provider’s default endpoint. Set when routing through 
 ## Testing
 
 ```bash
+npm run typecheck
 npm run e2e
 ```
 
 Runs fixture-based checks against the decision pipeline and handler (mocked LLM, no network). Each run writes a timestamped log under **`artifacts/e2e-YYYYMMDD-HHMMSS.log`**.
+
+GitHub Actions (`.github/workflows/ci.yml`) runs `typecheck` + `e2e` on pushes and pull requests to `main`.
 
 ## Cost
 

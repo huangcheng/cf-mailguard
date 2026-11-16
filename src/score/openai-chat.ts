@@ -1,5 +1,5 @@
 import type { MailguardEnv } from "../env.ts";
-import { llmFetchSignal } from "./fetch-timeout.ts";
+import { fetchWithRetry } from "./post-json.ts";
 import {
   buildUserPrompt,
   parseModelJson,
@@ -29,9 +29,8 @@ export function createOpenAIChatScorer(env: MailguardEnv): Scorer {
     ];
     const baseBody = { model: env.LLM_MODEL, messages };
 
-    let res = await fetch(url, {
+    let { res } = await fetchWithRetry(url, {
       method: "POST",
-      signal: llmFetchSignal(),
       headers,
       body: JSON.stringify({
         ...baseBody,
@@ -40,15 +39,16 @@ export function createOpenAIChatScorer(env: MailguardEnv): Scorer {
     });
     // Some OpenAI-compatible gateways reject response_format; retry bare.
     if (res.status === 400 || res.status === 422) {
-      res = await fetch(url, {
+      ({ res } = await fetchWithRetry(url, {
         method: "POST",
-        signal: llmFetchSignal(),
         headers,
         body: JSON.stringify(baseBody),
-      });
+      }));
     }
     if (!res.ok) {
-      throw new Error(`openai_chat ${res.status}: ${(await res.text()).slice(0, 300)}`);
+      throw new Error(
+        `openai_chat ${res.status}: ${(await res.text()).slice(0, 300)}`,
+      );
     }
     const data = (await res.json()) as ChatCompletionResponse;
     const content = data.choices?.[0]?.message?.content;
